@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -125,89 +124,54 @@ func Auth(username string, password string, uri string) (bool, error) {
 	var req *http.Request
 	var resp *http.Response
 	var err error
-	req, err = http.NewRequest("POST", uri, nil)
-	if err != nil {
-		log.Println("NewRequest")
-		return false, err
-	}
+	var authorization map[string]string = DigestAuthParams(resp)
+	log.Println("authorization", authorization)
+	realmHeader := authorization["realm"]
+	qopHeader := authorization["qop"]
+	nonceHeader := authorization["nonce"]
+	// opaqueHeader := authorization["opaque"]
+	algorithm := authorization["algorithm"]
+	realm := realmHeader
+	// A1
+	h := md5.New()
+	A1 := fmt.Sprintf("%s:%s:%s", username, realm, password)
+	io.WriteString(h, A1)
+	HA1 := hex.EncodeToString(h.Sum(nil))
+
+	// A2
+	h = md5.New()
+	A2 := fmt.Sprintf("POST:%s", "/json_rpc")
+	io.WriteString(h, A2)
+	HA2 := hex.EncodeToString(h.Sum(nil))
+
+	// response
+	cnonce := RandomKey()
+	response := H(strings.Join([]string{HA1, nonceHeader, nc, cnonce, qopHeader, HA2}, ":"))
+	// Digest qop="auth",algorithm=MD5,realm="monero-rpc",nonce="Xv95vUKvFx+kxW0S4YR/fA==",stale=false,
+	// Digest qop="auth",algorithm=MD5-sess,realm="monero-rpc",nonce="Xv95vUKvFx+kxW0S4YR/fA==",stale=false
+	// Digest username="user", realm="monero-rpc", nonce="U8V3x/9EcdCD2sOkky4e5g==", uri="/", algorithm=MD5, response="624cb3e625748e2f0c2fd1ba053e438f", qop=auth, nc=00000004, cnonce="d555659c77291e68"
+	AuthHeader := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm="%s", response="%s", qop=%s, nc=%s, cnonce="%s"`,
+		username, realmHeader, nonceHeader, "/json_rpc", algorithm, response, qopHeader, nc, cnonce)
+	log.Println("inDigest", resp.Header.Get("WWW-authenticate"))
+	log.Println("toDigest", AuthHeader)
 	headers := http.Header{
 		"User-Agent":      []string{userAgent},
 		"Accept":          []string{"*/*"},
 		"Accept-Encoding": []string{"identity"},
 		"Connection":      []string{"Keep-Alive"},
 		"Host":            []string{req.Host},
+		"Authorization":   []string{AuthHeader},
 	}
-	// headers := http.Header{
-	// 	"User-Agent":      []string{userAgent},
-	// 	"Accept":          []string{"*/*"},
-	// 	"Accept-Encoding": []string{"identity"},
-	// 	"Connection":      []string{"Keep-Alive"},
-	// 	"Host":            []string{req.Host},
-	// 	"Authorization":   []string{AuthHeader},
-	// }
+	//req, err = http.NewRequest("GET", uri, nil)
 	req.Header = headers
-
 	resp, err = client.Do(req)
 	if err != nil {
-		log.Println("Do")
+		log.Println("Do2222")
 		return false, err
 	}
-	// you HAVE to read the whole body and then close it to reuse the http connection
-	// otherwise it *could* fail in certain environments (behind proxy for instance)
-	io.Copy(ioutil.Discard, resp.Body)
-	resp.Body.Close()
-	log.Println("Do11111")
-	if resp.StatusCode == http.StatusUnauthorized {
-		var authorization map[string]string = DigestAuthParams(resp)
-		log.Println("authorization", authorization)
-		realmHeader := authorization["realm"]
-		qopHeader := authorization["qop"]
-		nonceHeader := authorization["nonce"]
-		// opaqueHeader := authorization["opaque"]
-		algorithm := authorization["algorithm"]
-		realm := realmHeader
-		// A1
-		h := md5.New()
-		A1 := fmt.Sprintf("%s:%s:%s", username, realm, password)
-		io.WriteString(h, A1)
-		HA1 := hex.EncodeToString(h.Sum(nil))
+	defer resp.Body.Close()
+	log.Println("444333", resp.StatusCode)
 
-		// A2
-		h = md5.New()
-		A2 := fmt.Sprintf("POST:%s", "/json_rpc")
-		io.WriteString(h, A2)
-		HA2 := hex.EncodeToString(h.Sum(nil))
-
-		// response
-		cnonce := RandomKey()
-		response := H(strings.Join([]string{HA1, nonceHeader, nc, cnonce, qopHeader, HA2}, ":"))
-		// Digest qop="auth",algorithm=MD5,realm="monero-rpc",nonce="Xv95vUKvFx+kxW0S4YR/fA==",stale=false,
-		// Digest qop="auth",algorithm=MD5-sess,realm="monero-rpc",nonce="Xv95vUKvFx+kxW0S4YR/fA==",stale=false
-		// Digest username="user", realm="monero-rpc", nonce="U8V3x/9EcdCD2sOkky4e5g==", uri="/", algorithm=MD5, response="624cb3e625748e2f0c2fd1ba053e438f", qop=auth, nc=00000004, cnonce="d555659c77291e68"
-		AuthHeader := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", algorithm="%s", response="%s", qop=%s, nc=%s, cnonce="%s"`,
-			username, realmHeader, nonceHeader, "/json_rpc", algorithm, response, qopHeader, nc, cnonce)
-		log.Println("inDigest", resp.Header.Get("WWW-authenticate"))
-		log.Println("toDigest", AuthHeader)
-		headers := http.Header{
-			"User-Agent":      []string{userAgent},
-			"Accept":          []string{"*/*"},
-			"Accept-Encoding": []string{"identity"},
-			"Connection":      []string{"Keep-Alive"},
-			"Host":            []string{req.Host},
-			"Authorization":   []string{AuthHeader},
-		}
-		//req, err = http.NewRequest("GET", uri, nil)
-		req.Header = headers
-		resp, err = client.Do(req)
-		if err != nil {
-			log.Println("Do2222")
-			return false, err
-		}
-		defer resp.Body.Close()
-		log.Println("444333", resp.StatusCode)
-	} else {
-		return false, fmt.Errorf("response status code should have been 401, it was %v", resp.StatusCode)
-	}
 	log.Println("333", resp.StatusCode)
 	return resp.StatusCode == http.StatusOK, err
 }
